@@ -699,6 +699,65 @@ private:
     metrics::Operation _operation;
 };
 
+struct AggregateOperation : public BaseOperation {
+    struct Pipeline {
+        Pipeline(const Node& node) {
+            if (!node.isSequence()) {
+                BOOST_THROW_EXCEPTION(InvalidConfigurationException("'Pipeline' must be an array"));
+            }
+            for (auto&& [k, v] : node) {
+                std::cout << "is it working??" << std::endl;
+            }
+        }
+
+        mongocxx::pipeline pipeline;
+    };
+
+    AggregateOperation(const Node& opNode,
+                       bool onSession,
+                       mongocxx::collection collection,
+                       metrics::Operation operation,
+                       PhaseContext& context,
+                       ActorId id)
+        : BaseOperation(context, opNode),
+          _onSession{onSession},
+          _collection{std::move(collection)},
+          _operation{operation},
+          _pipeline{opNode["Pipeline"].to<Pipeline>()} {
+        // TODO: Deal with 'Options'
+        /*
+        if (opNode["Options"]) {
+            _options = opNode["Options"].to<mongocxx::options::find>();
+        }
+        */
+    }
+
+    void run(mongocxx::client_session& session) override {
+        auto& pipeline = _pipeline.pipeline;
+        this->doBlock(_operation, [&](metrics::OperationContext& ctx) {
+            auto cursor = (_onSession) ? _collection.aggregate(session, pipeline)
+                                       : _collection.aggregate(pipeline);
+            for (auto&& doc : cursor) {
+                ctx.addDocuments(1);
+                ctx.addBytes(doc.length());
+            }
+            // TODO: Return the pipeline here or somethin??
+            return emptyDoc;
+        });
+    }
+
+
+private:
+    bool _onSession;
+    mongocxx::collection _collection;
+    // TODO! Make options work as expected.
+    /*
+    mongocxx::options::find _options;
+    */
+    Pipeline _pipeline;
+    metrics::Operation _operation;
+};
+
 struct FindOneAndUpdateOperation : public BaseOperation {
     FindOneAndUpdateOperation(const Node& opNode,
                               bool onSession,
@@ -1109,6 +1168,7 @@ private:
 std::unordered_map<std::string, OpCallback&> getOpConstructors() {
     // Maps the yaml 'OperationName' string to the appropriate constructor of 'BaseOperation' type.
     std::unordered_map<std::string, OpCallback&> opConstructors = {
+        {"aggregate", baseCallback<BaseOperation, OpCallback, AggregateOperation>},
         {"bulkWrite", baseCallback<BaseOperation, OpCallback, BulkWriteOperation>},
         {"countDocuments", baseCallback<BaseOperation, OpCallback, CountDocumentsOperation>},
         {"estimatedDocumentCount",
